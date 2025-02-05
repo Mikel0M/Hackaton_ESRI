@@ -5,17 +5,23 @@ import geopandas as gpd
 import matplotlib.pyplot as plt
 from shapely.geometry import Polygon
 
+"""ifcopenshell functions"""
 
-"""To get simple height from OverallHeight"""
 def get_building_height(model):
+    """
+    To get simple height from OverallHeight
+    """
     heights = []
     for building in model.by_type("IfcBuilding"):
         if hasattr(building, "OverallHeight"):
             heights.append(building.OverallHeight)
     return max(heights) if heights else None
 
-"""To get height from either OverallHeight or estimate it from the storey elevations"""
+
 def get_building_height_complex(model):
+    """
+    To get height from either OverallHeight or estimate it from the storey elevations
+    """
     heights = []
     floors = model.by_type("IfcBuildingStorey")
 
@@ -38,9 +44,11 @@ def get_building_height_complex(model):
 
     return estimated_height, len(floors)
 
-"""Use get_floor_area_first_test if your file structure is simple and uses properties directly on elements 
-(like GrossFloorArea or NetArea on storeys, slabs, or spaces)"""
 def get_floor_area_simple(model):
+    """
+    Use get_floor_area_first_test if your file structure is simple and uses properties directly on elements 
+    (like GrossFloorArea or NetArea on storeys, slabs, or spaces)
+    """
     total_area = 0
 
     # Try getting the area from IfcBuildingStorey (preferred)
@@ -72,8 +80,11 @@ def get_floor_area_simple(model):
 
     return total_area if total_area > 0 else "Unknown area"
 
-#getting the data gathered
+
 def get_building_data(model):
+    """
+    getting the data gathered
+    """
     
     building_data = {}
 
@@ -89,15 +100,19 @@ def get_building_data(model):
     return building_data
 
 
-""" to extract the data to a file given a path """
 def save_to_json(data, file_path):
+    """
+    to extract the data to a file given a path
+    """
     with open(file_path, "w") as json_file:
         json.dump(data, json_file, indent=4) # pretty print with indent
 
 
-""" Use get_floor_area for more complex files where area might be stored in related properties or element quantities, 
-and if you want more flexibility in handling different ways area data can be structured"""
+
 def get_floor_area(model):
+    """Use get_floor_area for more complex files where area might be stored in related properties or element quantities, 
+    and if you want more flexibility in handling different ways area data can be structured
+    """
     total_area = 0
 
     # Try getting area from IfcBuildingStorey
@@ -119,14 +134,6 @@ def get_floor_area(model):
                             total_area += quantity.AreaValue
 
     return total_area if total_area > 0 else "Unknown area"
-
-"""IFC Test File"""
-path = r"tests\AC20-FZK-Haus.ifc"
-
-"""SHP Test File"""
-zoning_map_path = r"data\Zonenplan.shp"
-zoning_map = gpd.read_file(zoning_map_path)
-
 
 """Functions based on Geopandas"""
 
@@ -195,8 +202,16 @@ def extract_zoning_restrictions(zoning_with_building):
         print("🚨 Building is not within any zoning area!")
 
 
+"""Here is for testing"""
 
+# IFC Test File
+path = r"tests\AC20-FZK-Haus.ifc"
 
+# SHP Test File
+zoning_map_path = r"data\Zonenplan.shp"
+zoning_map = gpd.read_file(zoning_map_path)
+
+# actual test
 if __name__ == "__main__":
     if os.path.exists(path):
         model = ifcopenshell.open(path)
