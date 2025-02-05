@@ -4,6 +4,7 @@ import os
 import geopandas as gpd
 import matplotlib.pyplot as plt
 from shapely.geometry import Polygon
+from pyproj import Transformer
 
 """ifcopenshell functions"""
 
@@ -81,6 +82,7 @@ def get_floor_area_simple(model):
     return total_area if total_area > 0 else "Unknown area"
 
 
+
 def get_building_data(model):
     """
     getting the data gathered
@@ -96,6 +98,8 @@ def get_building_data(model):
 
     # get total floor area
     building_data['floor_area'] = get_floor_area(model)
+
+
 
     return building_data
 
@@ -202,10 +206,49 @@ def extract_zoning_restrictions(zoning_with_building):
         print("🚨 Building is not within any zoning area!")
 
 
+"""Here is for compdealing with coordinates"""
+
+def dms_to_decimal(degrees, minutes, seconds, microseconds=0):
+    """
+    Convert Degrees, Minutes, Seconds (DMS) with microseconds to Decimal Degrees.
+    """
+    # Convert microseconds to milliseconds first
+    milliseconds = microseconds / 1000  # Convert microseconds to milliseconds
+
+    # Now convert DMS to decimal degrees
+    decimal_value = degrees + (minutes / 60) + ((seconds + (milliseconds / 1000)) / 3600)
+
+    print(f"DMS to Decimal: {degrees}° {minutes}' {seconds}\" {microseconds}µs → {decimal_value}")  # Debug print
+    return decimal_value
+
+
+
+def get_world_coordinates(model):
+    """Extracts WGS84 latitude and longitude from IfcSite."""
+    for site in model.by_type("IfcSite"):
+        if hasattr(site, "RefLatitude") and hasattr(site, "RefLongitude"):
+            print(f"Extracted DMS from IFC: {site.RefLatitude}, {site.RefLongitude}")  # Debug
+            return site.RefLatitude, site.RefLongitude
+    return None  # No georeferencing found
+
+def wgs84_to_lv95(latitude, longitude):
+    """Convert WGS84 (EPSG:4326) to Swiss LV95 (EPSG:2056)."""
+    transformer = Transformer.from_crs("EPSG:4326", "EPSG:2056", always_xy=True)
+    easting, northing = transformer.transform(longitude, latitude)
+    print(f"WGS84 to LV95: {latitude}, {longitude} → {easting}, {northing}")  # Debug
+    return easting, northing
+
+"""Here is for comparing"""
+
+def check_Max_Building_Height():
+    return None
+
+
+
 """Here is for testing"""
 
 # IFC Test File
-path = r"tests\AC20-FZK-Haus.ifc"
+path = r"tests\Test_Hackaton.ifc"
 
 # SHP Test File
 zoning_map_path = r"data\Zonenplan.shp"
@@ -216,18 +259,36 @@ if __name__ == "__main__":
     if os.path.exists(path):
         model = ifcopenshell.open(path)
 
+        if model:
+            world_coords = get_world_coordinates(model)
+            if world_coords:
+                lat_dms, lon_dms = world_coords  # Unpack tuple of tuples
+
+                # Debug Print DMS
+                print(f"Raw DMS Latitude: {lat_dms}")
+                print(f"Raw DMS Longitude: {lon_dms}")
+
+                # Convert DMS to Decimal
+                latitude = dms_to_decimal(*lat_dms)  
+                longitude = dms_to_decimal(*lon_dms)
+
+                print(f"Converted WGS84: Lat = {latitude}, Lon = {longitude}")
+
+                # Convert to Swiss LV95
+                lv95_coords = wgs84_to_lv95(latitude, longitude)
+                print(f"Swiss LV95 Coordinates: {lv95_coords}")  # (Easting, Northing)
+            else:
+                print("No georeferencing data found in the IFC model.")
+
         # this part reads IFC and makes a couple of tests
-        """height, num_floors = get_building_height_complex(model)
+        height, num_floors = get_building_height_complex(model)
         floor_area = get_floor_area(model)
         building_data = get_building_data(model)
         save_to_json(building_data, "building_data.json")
         print("json saved")
-    else:
-        print("Error: IFC file not found!")"""
-
         # this part is intended to test GIS interactions using Geopandas
         # Example usage
-        center_x, center_y = 2696411, 1262181  # Example center coordinates
+        center_x, center_y = lv95_coords[0], lv95_coords[1]  # Example center coordinates
         building_coords = generate_building_coords(center_x, center_y)
         building_polygon = Polygon(building_coords)
 
@@ -247,6 +308,12 @@ if __name__ == "__main__":
 
         plot_building_and_zoning(building_polygon, zoning_map)
         extract_zoning_restrictions(zoning_with_building)
+
+        
+    else:
+        print("Error: IFC file not found!")
+
+        
 
 
 
