@@ -3,7 +3,8 @@ Created on Tue Feb  4 10:12:31 2025
 
 @author: mikel
 """
-
+from fastapi import FastAPI, File, UploadFile, HTTPException
+import shutil
 import ifcopenshell
 import ifcopenshell.geom
 import json
@@ -12,6 +13,12 @@ import geopandas as gpd
 import matplotlib.pyplot as plt
 from shapely.geometry import MultiPoint, Polygon
 from pyproj import Transformer
+
+# directory to save uploaded files
+UPLOAD_FOLDER = "uploads"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+app = FastAPI()
 
 
 """ifcopenshell functions"""
@@ -370,91 +377,140 @@ def move_vertices(vertices, x_translation, y_translation):
 
 """Here is for testing"""
 
+
+""" Implementing functions to simplify """
+
+def get_lv95_coords(path):
+    """
+    """
+    model = ifcopenshell.open(path)
+    world_coords = get_world_coordinates(model)
+    if world_coords:
+        lat_dms, lon_dms = world_coords  # Unpack tuple of tuples
+
+        # Convert DMS to Decimal
+        latitude = dms_to_decimal(*lat_dms)  
+        longitude = dms_to_decimal(*lon_dms)
+
+        print(f"Converted WGS84: Lat = {latitude}, Lon = {longitude}")
+
+        # Convert to Swiss LV95
+        lv95_coords = wgs84_to_lv95(latitude, longitude)
+        #print(f"Swiss LV95 Coordinates: {lv95_coords}")  # (Easting, Northing)
+    else:
+        print("No georeferencing data found in the IFC model.")
+        # Get floor vertices
+
+    return lv95_coords
+
+def get_Building_data(path, zoning_map_path):
+    """
+
+    """
+    
+    model = ifcopenshell.open(path)
+    zoning_map = gpd.read_file(zoning_map_path)
+
+    
+    lv95_coords = get_lv95_coords(path)
+    vertices = get_floor_vertices(model)
+    boundary_polygon = get_boundary_polygon(vertices)
+    vertices_95 = move_vertices(vertices, lv95_coords[0], lv95_coords[1])
+    boundary_polygon_lv95 = get_boundary_polygon(vertices_95)
+    centroid = get_centroid(boundary_polygon)
+    # We are going to use the centroid of the polygonal projection of the slabs to get the position of the building.
+    # This way, if the 0 point is outside of the building it will not be a problem.
+    centroid_lv95 = [centroid.x + lv95_coords[0],centroid.y + lv95_coords[1]]
+    #now, in order to represent the building
+    # this part reads IFC and makes a couple of tests
+    height, num_floors = get_building_height_complex(model)
+    floor_area = get_floor_area(model)
+    building_data = get_building_data(model)
+    save_to_json(building_data, "building_data.json")
+    print("json saved")
+    # this part is intended to test GIS interactions using Geopandas
+    # Example usage
+    center_x, center_y = centroid_lv95[0], centroid_lv95[1]  # Example center coordinates
+    building_coords = generate_building_coords(center_x, center_y)
+    building_polygon = Polygon(building_coords)
+    # Assuming zoning_map is a GeoDataFrame containing zoning polygons
+    zoning_with_building = check_zoning(building_polygon, zoning_map)
+
+    if not zoning_with_building.empty:
+        print("Building is within the following zoning areas:")
+        for idx, row in zoning_with_building.iterrows():
+            print(f"Zoning Area {idx + 1}:")
+            print(f"  OBJID: {row['OBJID']}")
+            print(f"  R1_CODE: {row['R1_CODE']}")
+            print(f"  R1_BEZEICH: {row['R1_BEZEICH']}")
+            print(f"  R1_TYP_KAN: {row['R1_TYP_KAN']}")
+            #print(f"  Geometry: {row['geometry']}")
+            print()
+
+    plot_building_and_zoning(boundary_polygon_lv95, zoning_map, lv95_coords,vertices_95, zoom_factor = 2)
+    extract_zoning_restrictions(zoning_with_building)
+    
+
+
+    return building_data
+
 # IFC Test File
 path = r"tests\Hackaton_test.ifc"
 
 # SHP Test File
 zoning_map_path = r"data\Zonenplan.shp"
-zoning_map = gpd.read_file(zoning_map_path)
+
 
 # actual test
 if __name__ == "__main__":
     if os.path.exists(path):
-        model = ifcopenshell.open(path)
+        if os.path.exists(zoning_map_path):
+            get_Building_data(path, zoning_map_path)
 
-        if model:
-            world_coords = get_world_coordinates(model)
-            if world_coords:
-                lat_dms, lon_dms = world_coords  # Unpack tuple of tuples
-
-                # Debug Print DMS
-                #print(f"Raw DMS Latitude: {lat_dms}")
-                #print(f"Raw DMS Longitude: {lon_dms}")
-
-                # Convert DMS to Decimal
-                latitude = dms_to_decimal(*lat_dms)  
-                longitude = dms_to_decimal(*lon_dms)
-
-                print(f"Converted WGS84: Lat = {latitude}, Lon = {longitude}")
-
-                # Convert to Swiss LV95
-                lv95_coords = wgs84_to_lv95(latitude, longitude)
-                #print(f"Swiss LV95 Coordinates: {lv95_coords}")  # (Easting, Northing)
-            else:
-                print("No georeferencing data found in the IFC model.")
-            # Get floor vertices
-
-        vertices = get_floor_vertices(model)
-
-        if vertices:
-       
-
-            boundary_polygon = get_boundary_polygon(vertices)
-            vertices_95 = move_vertices(vertices, lv95_coords[0], lv95_coords[1])
-            boundary_polygon_lv95 = get_boundary_polygon(vertices_95)
-            centroid = get_centroid(boundary_polygon)
-
-
-        # We are going to use the centroid of the polygonal projection of the slabs to get the position of the building.
-        # This way, if the 0 point is outside of the building it will not be a problem.
-        centroid_lv95 = [centroid.x + lv95_coords[0],centroid.y + lv95_coords[1]]
-
-        #now, in order to represent the building
-
-        # this part reads IFC and makes a couple of tests
-        height, num_floors = get_building_height_complex(model)
-        floor_area = get_floor_area(model)
-        building_data = get_building_data(model)
-        save_to_json(building_data, "building_data.json")
-        print("json saved")
-        # this part is intended to test GIS interactions using Geopandas
-        # Example usage
-        center_x, center_y = centroid_lv95[0], centroid_lv95[1]  # Example center coordinates
-        building_coords = generate_building_coords(center_x, center_y)
-        building_polygon = Polygon(building_coords)
-
-        # Assuming zoning_map is a GeoDataFrame containing zoning polygons
-        zoning_with_building = check_zoning(building_polygon, zoning_map)
-
-        if not zoning_with_building.empty:
-            print("Building is within the following zoning areas:")
-            for idx, row in zoning_with_building.iterrows():
-                print(f"Zoning Area {idx + 1}:")
-                print(f"  OBJID: {row['OBJID']}")
-                print(f"  R1_CODE: {row['R1_CODE']}")
-                print(f"  R1_BEZEICH: {row['R1_BEZEICH']}")
-                print(f"  R1_TYP_KAN: {row['R1_TYP_KAN']}")
-                #print(f"  Geometry: {row['geometry']}")
-                print()
-
-        plot_building_and_zoning(boundary_polygon_lv95, zoning_map, lv95_coords,vertices_95, zoom_factor = 2)
-        extract_zoning_restrictions(zoning_with_building)
+        else:
+            print("SHP file missing")
 
     else:
-        print("Error: IFC file not found!")
+        print("IFC file missing")    
 
+UPLOAD_DIR = "uploads"
 
+@app.get("/")
+def read_root():
+    return {"message": "FastAPI is running!"}
 
+@app.post("/upload/")
+async def upload_ifc(file: UploadFile = File(...)):
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+    # Save the uploaded IFC file
+    ifc_path = os.path.join(UPLOAD_DIR, file.filename)
+    with open(ifc_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    # Load the existing SHP file
+    if os.path.exists(zoning_map_path):
+        try:
+            gdf = gpd.read_file(zoning_map_path)
+            shp_info = gdf.head().to_json()  # Convert first few rows to JSON
+        except Exception as e:
+            return {"error": f"Failed to read SHP file: {str(e)}"}
+    else:
+        return {"error": "SHP file is missing on the server"}
+
+    # Call the function to process the IFC file after uploading it
+    try:
+        building_data = get_Building_data(ifc_path, zoning_map_path)  # Make sure the correct path is passed
+    except Exception as e:
+        return {"error": f"Failed to process IFC file: {str(e)}"}
+
+    return {
+        "message": "IFC file uploaded and processed successfully",
+        "data": {
+            "data": building_data
+
+        }
+    }
 
 
     
