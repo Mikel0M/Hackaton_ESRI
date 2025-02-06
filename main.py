@@ -1,10 +1,18 @@
+"""
+Created on Tue Feb  4 10:12:31 2025
+
+@author: mikel
+"""
+
 import ifcopenshell
+import ifcopenshell.geom
 import json
 import os
 import geopandas as gpd
 import matplotlib.pyplot as plt
-from shapely.geometry import Polygon
+from shapely.geometry import MultiPoint, Polygon
 from pyproj import Transformer
+
 
 """ifcopenshell functions"""
 
@@ -162,28 +170,64 @@ def check_zoning(building_polygon, zoning_map):
     within_zoning = zoning_map.contains(building_polygon)
     return zoning_map[within_zoning]
 
-def plot_building_and_zoning(building_polygon, zoning_map, buffer_distance=100):
-    """
-    Plot the zoning map, the building, and its buffer.
-    """
-    building_buffer = building_polygon.buffer(buffer_distance)
+import matplotlib.pyplot as plt
+from shapely.geometry import Point
 
+def plot_building_and_zoning(building_polygon, zoning_map, lv95_coords, vertices, zoom_factor=1):
+    """
+    Plot the zoning map, the building polygon, and an additional polygon from vertices.
+    Also zooms into the area of both polygons and adds a red point at the building's center.
+    
+    :param building_polygon: The building polygon to plot.
+    :param zoning_map: The zoning map to plot as the background.
+    :param lv95_coords: Coordinates to add a red point (typically the centroid or center of the building).
+    :param vertices: A list of vertices for an additional polygon to plot.
+    :param zoom_factor: Factor by which to zoom in on the building and vertices (default 1 means no zoom).
+    """
     fig, ax = plt.subplots(figsize=(10, 10))
     zoning_map.plot(ax=ax, color='lightgray', edgecolor='black')
 
-    minx, miny, maxx, maxy = zoning_map.total_bounds
-    ax.set_xlim(minx, maxx)
-    ax.set_ylim(miny, maxy)
+    # Plot the red point at the lv95_coords (center of the building)
+    ax.plot(lv95_coords[0], lv95_coords[1], 'ro', markersize=8, label="Building Center")
 
-    # Plot building
-    x, y = building_polygon.exterior.xy
-    ax.fill(x, y, color='red', alpha=0.5)
+    # Create the building polygon and plot it (if provided)
+    if building_polygon:
+        x_building, y_building = building_polygon.exterior.xy
+        ax.fill(x_building, y_building, color='red', alpha=0.5, label="Building Polygon")
+    
+    # If vertices are provided, plot the additional polygon
+    if vertices:
+        # Create the polygon from the vertices
+        poly = Polygon(vertices)
+        x_poly, y_poly = poly.exterior.xy
+        ax.fill(x_poly, y_poly, color='blue', alpha=0.5, label="Additional Polygon")
 
-    # Plot buffer
-    x_buffer, y_buffer = building_buffer.exterior.xy
-    ax.fill(x_buffer, y_buffer, color='blue', alpha=0.3)
+    # Calculate the bounding box of both the building polygon and the additional polygon
+    minx_building, miny_building, maxx_building, maxy_building = building_polygon.bounds
+    if vertices:
+        # Get the bounding box of the additional polygon
+        poly = Polygon(vertices)
+        minx_vertices, miny_vertices, maxx_vertices, maxy_vertices = poly.bounds
+    else:
+        minx_vertices, miny_vertices, maxx_vertices, maxy_vertices = minx_building, miny_building, maxx_building, maxy_building
 
+    # Combine the bounding boxes of both the building and additional polygon
+    minx = min(minx_building, minx_vertices)
+    miny = min(miny_building, miny_vertices)
+    maxx = max(maxx_building, maxx_vertices)
+    maxy = max(maxy_building, maxy_vertices)
+
+    # Apply zoom based on the combined bounding box of both polygons
+    x_margin = (maxx - minx) * zoom_factor
+    y_margin = (maxy - miny) * zoom_factor
+
+    # Set the limits of the plot to zoom into both the building and additional polygon
+    ax.set_xlim(minx - x_margin, maxx + x_margin)
+    ax.set_ylim(miny - y_margin, maxy + y_margin)
+
+    plt.legend()
     plt.show()
+
 
 def extract_zoning_restrictions(zoning_with_building):
     """
@@ -227,7 +271,7 @@ def get_world_coordinates(model):
     """Extracts WGS84 latitude and longitude from IfcSite."""
     for site in model.by_type("IfcSite"):
         if hasattr(site, "RefLatitude") and hasattr(site, "RefLongitude"):
-            print(f"Extracted DMS from IFC: {site.RefLatitude}, {site.RefLongitude}")  # Debug
+            #print(f"Extracted DMS from IFC: {site.RefLatitude}, {site.RefLongitude}")  # Debug
             return site.RefLatitude, site.RefLongitude
     return None  # No georeferencing found
 
@@ -243,12 +287,91 @@ def wgs84_to_lv95(latitude, longitude):
 def check_Max_Building_Height():
     return None
 
+""" Here is for getting IFC floor coordinates"""
 
+def get_floor_vertices(model):
+    """
+    Extract vertices of floor areas (e.g., from IfcSlab or IfcSpace).
+    """
+    settings = ifcopenshell.geom.settings()
+    vertices = []
+
+    # Loop through all IfcSlab objects to get the geometry
+    for slab in model.by_type("IfcSlab"):
+        shape = ifcopenshell.geom.create_shape(settings, slab)
+        if shape:
+            geometry = shape.geometry.verts  # Extract vertex list
+            for i in range(0, len(geometry), 3):  # Extract (x, y, z) triplets
+                vertices.append((geometry[i], geometry[i + 1], geometry[i + 2]))
+
+    # Loop through IfcSpace objects (if no slabs found)
+    if not vertices:
+        for space in model.by_type("IfcSpace"):
+            shape = ifcopenshell.geom.create_shape(settings, space)
+            if shape:
+                geometry = shape.geometry.verts  # Extract vertex list
+                for i in range(0, len(geometry), 3):  # Extract (x, y, z) triplets
+                    vertices.append((geometry[i], geometry[i + 1], geometry[i + 2]))
+
+    return vertices
+
+
+def get_boundary_polygon(vertices):
+    """
+    Project the 3D points onto a 2D plane (X, Y) and compute the boundary polygon.
+    """
+    # Project to 2D by removing Z values
+    points_2d = [(x, y) for x, y, _ in vertices]
+
+    # Compute the convex hull (outer boundary)
+    multipoint = MultiPoint(points_2d)
+    boundary_polygon = multipoint.convex_hull  # This creates a polygon
+
+    return boundary_polygon
+
+def get_boundary_polygon_lv95(vertices, lv95_coords):
+    """
+    Move the vertices by adding LV95 coordinates to their x and y values.
+    Project the 3D points onto a 2D plane (X, Y) and compute the boundary polygon.
+    
+    :param vertices: List of tuples with (x, y, z) coordinates.
+    :param lv95_coords: Tuple of LV95 coordinates (lv95_x, lv95_y).
+    :return: A polygon representing the boundary.
+    """
+    # Shift the x and y values of each vertex by the LV95 coordinates
+    shifted_points = [(x + lv95_coords[0], y + lv95_coords[1]) for x, y, _ in vertices]
+    
+    # Compute the convex hull (outer boundary)
+    multipoint = MultiPoint(shifted_points)
+    boundary_polygon = multipoint.convex_hull  # This creates the polygon
+
+    return boundary_polygon
+
+
+def get_centroid(polygon):
+    """
+    Compute the centroid of the polygon.
+    """
+    return polygon.centroid  # Shapely provides centroid directly
+
+def move_vertices(vertices, x_translation, y_translation):
+    """
+    Move each vertex by a given translation vector (x_translation, y_translation).
+
+    :param vertices: List of vertices in the format [(x, y, z), (x2, y2, z2), ...]
+    :param x_translation: The amount to move in the x-direction.
+    :param y_translation: The amount to move in the y-direction.
+    :return: List of translated vertices.
+    """
+    # Apply the translation vector to each vertex
+    translated_vertices = [(x + x_translation, y + y_translation, z) for x, y, z in vertices]
+    
+    return translated_vertices
 
 """Here is for testing"""
 
 # IFC Test File
-path = r"tests\Test_Hackaton.ifc"
+path = r"tests\Hackaton_test.ifc"
 
 # SHP Test File
 zoning_map_path = r"data\Zonenplan.shp"
@@ -265,8 +388,8 @@ if __name__ == "__main__":
                 lat_dms, lon_dms = world_coords  # Unpack tuple of tuples
 
                 # Debug Print DMS
-                print(f"Raw DMS Latitude: {lat_dms}")
-                print(f"Raw DMS Longitude: {lon_dms}")
+                #print(f"Raw DMS Latitude: {lat_dms}")
+                #print(f"Raw DMS Longitude: {lon_dms}")
 
                 # Convert DMS to Decimal
                 latitude = dms_to_decimal(*lat_dms)  
@@ -276,9 +399,27 @@ if __name__ == "__main__":
 
                 # Convert to Swiss LV95
                 lv95_coords = wgs84_to_lv95(latitude, longitude)
-                print(f"Swiss LV95 Coordinates: {lv95_coords}")  # (Easting, Northing)
+                #print(f"Swiss LV95 Coordinates: {lv95_coords}")  # (Easting, Northing)
             else:
                 print("No georeferencing data found in the IFC model.")
+            # Get floor vertices
+
+        vertices = get_floor_vertices(model)
+
+        if vertices:
+       
+
+            boundary_polygon = get_boundary_polygon(vertices)
+            vertices_95 = move_vertices(vertices, lv95_coords[0], lv95_coords[1])
+            boundary_polygon_lv95 = get_boundary_polygon(vertices_95)
+            centroid = get_centroid(boundary_polygon)
+
+
+        # We are going to use the centroid of the polygonal projection of the slabs to get the position of the building.
+        # This way, if the 0 point is outside of the building it will not be a problem.
+        centroid_lv95 = [centroid.x + lv95_coords[0],centroid.y + lv95_coords[1]]
+
+        #now, in order to represent the building
 
         # this part reads IFC and makes a couple of tests
         height, num_floors = get_building_height_complex(model)
@@ -288,7 +429,7 @@ if __name__ == "__main__":
         print("json saved")
         # this part is intended to test GIS interactions using Geopandas
         # Example usage
-        center_x, center_y = lv95_coords[0], lv95_coords[1]  # Example center coordinates
+        center_x, center_y = centroid_lv95[0], centroid_lv95[1]  # Example center coordinates
         building_coords = generate_building_coords(center_x, center_y)
         building_polygon = Polygon(building_coords)
 
@@ -303,17 +444,16 @@ if __name__ == "__main__":
                 print(f"  R1_CODE: {row['R1_CODE']}")
                 print(f"  R1_BEZEICH: {row['R1_BEZEICH']}")
                 print(f"  R1_TYP_KAN: {row['R1_TYP_KAN']}")
-                print(f"  Geometry: {row['geometry']}")
+                #print(f"  Geometry: {row['geometry']}")
                 print()
 
-        plot_building_and_zoning(building_polygon, zoning_map)
+        plot_building_and_zoning(boundary_polygon_lv95, zoning_map, lv95_coords,vertices_95, zoom_factor = 2)
         extract_zoning_restrictions(zoning_with_building)
 
-        
     else:
         print("Error: IFC file not found!")
 
-        
+
 
 
 
