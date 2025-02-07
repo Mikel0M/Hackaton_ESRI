@@ -7,7 +7,6 @@ from fastapi import FastAPI, File, UploadFile, HTTPException
 import shutil
 import ifcopenshell
 import ifcopenshell.geom
-import numpy as np
 import json
 import os
 import geopandas as gpd
@@ -102,28 +101,25 @@ def save_to_json(data, file_path):
     """
     Save data to a JSON file, ensuring all values are JSON serializable.
     """
-    def convert_numpy_types(obj):
-        """ Recursively convert NumPy types to native Python types """
-        if isinstance(obj, np.integer):
-            return int(obj)
-        elif isinstance(obj, np.floating):
-            return float(obj)
-        elif isinstance(obj, np.ndarray):
-            return obj.tolist()  # Convert NumPy arrays to lists
+    def ensure_serializable(obj):
+        """ Recursively convert all values to JSON-friendly Python types """
+        if isinstance(obj, (int, float, str, bool, type(None))):
+            return obj  # Already JSON serializable
         elif isinstance(obj, dict):
-            return {key: convert_numpy_types(value) for key, value in obj.items()}
+            return {key: ensure_serializable(value) for key, value in obj.items()}
         elif isinstance(obj, list):
-            return [convert_numpy_types(item) for item in obj]
-        return obj  # Return as is if it's already a native Python type
-    
-    # Convert NumPy types before saving
-    clean_data = convert_numpy_types(data)
+            return [ensure_serializable(item) for item in obj]
+        elif hasattr(obj, "tolist"):  # Handle lists/arrays from other libraries
+            return obj.tolist()
+        return str(obj)  # Convert unknown objects to strings
 
-    # Save to JSON
-    with open(file_path, "w") as json_file:
-        json.dump(clean_data, json_file, indent=4)
+    # Convert data before saving
+    serializable_data = ensure_serializable(data)
 
-    print(f"✅ JSON saved successfully to {file_path}")
+    with open(file_path, "w", encoding="utf-8") as json_file:
+        json.dump(serializable_data, json_file, indent=4)
+
+    print(f"Data saved to {file_path}")
 
 def get_floor_area(model):
     """Use get_floor_area for more complex files where area might be stored in related properties or element quantities, 
@@ -447,6 +443,7 @@ def get_Building_data(path, zoning_map_path):
     building_data.update(zoning_restrictions)  # Merging dictionaries
 
     # Save data to JSON
+
     save_to_json(building_data, "building_data.json")
     print("JSON saved successfully:", building_data)
 
@@ -454,6 +451,18 @@ def get_Building_data(path, zoning_map_path):
     plot_building_and_zoning(boundary_polygon_lv95, zoning_map, lv95_coords, vertices_95, zoom_factor=2)
 
     return building_data
+
+def ensure_serializable(obj):
+    """ Recursively convert all values to JSON-friendly Python types """
+    if isinstance(obj, (int, float, str, bool, type(None))):
+        return obj  # Already JSON serializable
+    elif isinstance(obj, dict):
+        return {key: ensure_serializable(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [ensure_serializable(item) for item in obj]
+    elif hasattr(obj, "tolist"):  # Handle list-like objects
+        return obj.tolist()
+    return str(obj)  # Convert unknown objects to strings
 
 
 # IFC Test File
@@ -479,7 +488,7 @@ UPLOAD_DIR = "uploads"
 
 @app.get("/")
 def read_root():
-    return {"message": "FastAPI is running!"}
+    return {"message": "Ready for AEC Hackaton Zurich 2025 ESRI!"}
 
 @app.post("/upload/")
 async def upload_ifc(file: UploadFile = File(...)):
@@ -500,20 +509,19 @@ async def upload_ifc(file: UploadFile = File(...)):
     else:
         return {"error": "SHP file is missing on the server"}
 
-    # Call the function to process the IFC file after uploading it
+    # Process the IFC file
     try:
-        building_data = get_Building_data(ifc_path, zoning_map_path)  # Make sure the correct path is passed
+        building_data = get_Building_data(ifc_path, zoning_map_path)
     except Exception as e:
         return {"error": f"Failed to process IFC file: {str(e)}"}
 
-    return {
+    # Create the response payload
+    response_data = {
         "message": "IFC file uploaded and processed successfully",
-        "data": {
-            "data": building_data
-
-        }
+        "data": ensure_serializable(building_data)  # Convert to JSON-safe types
     }
 
+    return response_data
 
     
     
