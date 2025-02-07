@@ -1,5 +1,14 @@
 {
     "height": 5.7,
     "floors": 3,
-    "floor_area": "Unknown area"
+    "floor_area": 75.71993627901205,
+    "OBJID": "102720",
+    "R1_CODE": "C110311",
+    "R1_BEZEICH": "W3/2.6",
+    "R1_TYP_KAN": "GN_Typ_Kanton[z526f6d0c0000001",
+    "Max Building Height": -99.0,
+    "Total Allowed Height": -99.0,
+    "Max Full Floors": 3,
+    "Allowed Attic Floors": 0,
+    "Floor Area Ratio (FAR)": -99
 }

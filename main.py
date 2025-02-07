@@ -7,6 +7,7 @@ from fastapi import FastAPI, File, UploadFile, HTTPException
 import shutil
 import ifcopenshell
 import ifcopenshell.geom
+import numpy as np
 import json
 import os
 import geopandas as gpd
@@ -97,36 +98,32 @@ def get_floor_area_simple(model):
     return total_area if total_area > 0 else "Unknown area"
 
 
-
-def get_building_data(model):
-    """
-    getting the data gathered
-    """
-    
-    building_data = {}
-
-    # get building height (if available)
-    building_data['height'] = get_building_height_complex(model)[0]
-
-    # get number of floors
-    building_data['floors'] = len(model.by_type("IfcBuildingStorey"))
-
-    # get total floor area
-    building_data['floor_area'] = get_floor_area(model)
-
-
-
-    return building_data
-
-
 def save_to_json(data, file_path):
     """
-    to extract the data to a file given a path
+    Save data to a JSON file, ensuring all values are JSON serializable.
     """
+    def convert_numpy_types(obj):
+        """ Recursively convert NumPy types to native Python types """
+        if isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()  # Convert NumPy arrays to lists
+        elif isinstance(obj, dict):
+            return {key: convert_numpy_types(value) for key, value in obj.items()}
+        elif isinstance(obj, list):
+            return [convert_numpy_types(item) for item in obj]
+        return obj  # Return as is if it's already a native Python type
+    
+    # Convert NumPy types before saving
+    clean_data = convert_numpy_types(data)
+
+    # Save to JSON
     with open(file_path, "w") as json_file:
-        json.dump(data, json_file, indent=4) # pretty print with indent
+        json.dump(clean_data, json_file, indent=4)
 
-
+    print(f"✅ JSON saved successfully to {file_path}")
 
 def get_floor_area(model):
     """Use get_floor_area for more complex files where area might be stored in related properties or element quantities, 
@@ -238,23 +235,22 @@ def plot_building_and_zoning(building_polygon, zoning_map, lv95_coords, vertices
 
 def extract_zoning_restrictions(zoning_with_building):
     """
-    Extract and print zoning restrictions for the building.
+    Extract zoning restrictions for the building and store them in a dictionary.
     """
-    if not zoning_with_building.empty:
-        max_height = zoning_with_building.get('GEBAEUDEHO', None).values[0]
-        total_height = zoning_with_building.get('GESAMTHOEH', None).values[0]
-        max_floors = zoning_with_building.get('VOLLGESCHO', None).values[0]
-        attic_floors = zoning_with_building.get('DACHGESCHO', None).values[0]
-        floor_area_ratio = zoning_with_building.get('AUSNUETZUN', None).values[0]
+    zoning_restrictions = {}
 
-        print("🏗 **Zoning Restrictions for the Building:**")
-        print(f"- Max Building Height: {max_height} meters")
-        print(f"- Total Allowed Height: {total_height} meters")
-        print(f"- Max Full Floors: {max_floors} floors")
-        print(f"- Allowed Attic Floors: {attic_floors} floors")
-        print(f"- Floor Area Ratio (FAR): {floor_area_ratio}")
+    if not zoning_with_building.empty:
+        zoning_restrictions = {
+            "Max Building Height": zoning_with_building.get('GEBAEUDEHO', -99).values[0],
+            "Total Allowed Height": zoning_with_building.get('GESAMTHOEH', -99).values[0],
+            "Max Full Floors": zoning_with_building.get('VOLLGESCHO', 0).values[0],
+            "Allowed Attic Floors": zoning_with_building.get('DACHGESCHO', 0).values[0],
+            "Floor Area Ratio (FAR)": zoning_with_building.get('AUSNUETZUN', -99).values[0]
+        }
     else:
         print("🚨 Building is not within any zoning area!")
+
+    return zoning_restrictions
 
 
 """Here is for compdealing with coordinates"""
@@ -405,57 +401,63 @@ def get_lv95_coords(path):
 
 def get_Building_data(path, zoning_map_path):
     """
-
+    Function to extract building data and zoning information, including restrictions.
     """
-    
+
     model = ifcopenshell.open(path)
     zoning_map = gpd.read_file(zoning_map_path)
 
-    
     lv95_coords = get_lv95_coords(path)
     vertices = get_floor_vertices(model)
     boundary_polygon = get_boundary_polygon(vertices)
     vertices_95 = move_vertices(vertices, lv95_coords[0], lv95_coords[1])
     boundary_polygon_lv95 = get_boundary_polygon(vertices_95)
     centroid = get_centroid(boundary_polygon)
+
     # We are going to use the centroid of the polygonal projection of the slabs to get the position of the building.
-    # This way, if the 0 point is outside of the building it will not be a problem.
-    centroid_lv95 = [centroid.x + lv95_coords[0],centroid.y + lv95_coords[1]]
-    #now, in order to represent the building
-    # this part reads IFC and makes a couple of tests
-    height, num_floors = get_building_height_complex(model)
-    floor_area = get_floor_area(model)
-    building_data = get_building_data(model)
-    save_to_json(building_data, "building_data.json")
-    print("json saved")
-    # this part is intended to test GIS interactions using Geopandas
-    # Example usage
-    center_x, center_y = centroid_lv95[0], centroid_lv95[1]  # Example center coordinates
+    centroid_lv95 = [centroid.x + lv95_coords[0], centroid.y + lv95_coords[1]]
+
+    # Generate building coordinates
+    center_x, center_y = centroid_lv95[0], centroid_lv95[1]  
     building_coords = generate_building_coords(center_x, center_y)
     building_polygon = Polygon(building_coords)
-    # Assuming zoning_map is a GeoDataFrame containing zoning polygons
+
+    # Check zoning
     zoning_with_building = check_zoning(building_polygon, zoning_map)
 
+    # Initialize building data dictionary
+    building_data = {
+        "height": get_building_height_complex(model)[0],
+        "floors": len(model.by_type("IfcBuildingStorey")),
+        "floor_area": get_floor_area(model)
+    }
+
+    # Store zoning information if available (only first matching zone)
     if not zoning_with_building.empty:
-        print("Building is within the following zoning areas:")
-        for idx, row in zoning_with_building.iterrows():
-            print(f"Zoning Area {idx + 1}:")
-            print(f"  OBJID: {row['OBJID']}")
-            print(f"  R1_CODE: {row['R1_CODE']}")
-            print(f"  R1_BEZEICH: {row['R1_BEZEICH']}")
-            print(f"  R1_TYP_KAN: {row['R1_TYP_KAN']}")
-            #print(f"  Geometry: {row['geometry']}")
-            print()
+        first_zone = zoning_with_building.iloc[0]  # Take the first matching zoning entry
+        building_data.update({
+            "OBJID": first_zone['OBJID'],
+            "R1_CODE": first_zone['R1_CODE'],
+            "R1_BEZEICH": first_zone['R1_BEZEICH'],
+            "R1_TYP_KAN": first_zone['R1_TYP_KAN']
+        })
 
-    plot_building_and_zoning(boundary_polygon_lv95, zoning_map, lv95_coords,vertices_95, zoom_factor = 2)
-    extract_zoning_restrictions(zoning_with_building)
-    
+    # Extract zoning restrictions and add them to building_data
+    zoning_restrictions = extract_zoning_restrictions(zoning_with_building)
+    building_data.update(zoning_restrictions)  # Merging dictionaries
 
+    # Save data to JSON
+    save_to_json(building_data, "building_data.json")
+    print("JSON saved successfully:", building_data)
+
+    # Visualization
+    plot_building_and_zoning(boundary_polygon_lv95, zoning_map, lv95_coords, vertices_95, zoom_factor=2)
 
     return building_data
 
+
 # IFC Test File
-path = r"tests\Hackaton_test.ifc"
+path = r"tests\Test_Esri.ifc"
 
 # SHP Test File
 zoning_map_path = r"data\Zonenplan.shp"
